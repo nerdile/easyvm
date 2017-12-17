@@ -68,10 +68,12 @@ Function Deploy-EasyVM {
     [switch] $NoBoot,
     [switch] $NoDomainJoin,
     [switch] $Resume,
-    [Parameter(Mandatory=$False)]
+    [Parameter()]
     [PSCredential] $AdminCreds,
-    [Parameter(Mandatory=$False)]
-    [PSCredential] $DomainCreds
+    [Parameter()]
+    [PSCredential] $DomainCreds,
+    [Parameter()]
+    [string] $ProductKey
   )
   
   $myeap = $ErrorActionPreference;
@@ -80,6 +82,8 @@ Function Deploy-EasyVM {
   if (!$Hostname) {
     if (!$Name.Contains("-") -and $Name.Length -lt 6) {
       $Hostname = ("$($Env:Username)-$Name");
+    } else {
+      $Hostname = $Name;
     }
   }
 
@@ -104,13 +108,16 @@ Function Deploy-EasyVM {
   # Get the interactive prompts out of the way before we start copying vhd's around
   if ($templateData.template.image.prep -ne "none")
   {
-    $uxml = [xml](gc "$T\unattend.xml");
-    $admincreds = (_Get-AdminCreds);
+    $xml = gi "$T\unattend.xml" -ea 0
+    if (!$xml) { $xml = gi "$T\..\unattend.xml" }
+
+    $uxml = [xml](gc $xml);
+    $AdminCreds = _Get-AdminCreds $AdminCreds;
     if ($templateData.template.requiresDomainJoin -and $NoDomainJoin) {
       throw "This template cannot be used with -NoDomainJoin.";
     }
     
-    $domaincreds = _Get-DomainCreds $domaincreds;
+    $DomainCreds = _Get-DomainCreds $DomainCreds;
     
     # Get User Credentials
     if (!($NoDomainJoin)) {
@@ -119,9 +126,13 @@ Function Deploy-EasyVM {
   }
 
   Write-Host "Creating system volume..."
-  $vhd = "$vmdir\$Name-system.vhd";
+  $srcvhd = _Get-MaybeVhdx "$($config.TeamDir)\vhd\$($templateData.template.image.file)"
+  if (!$srcvhd) { throw "VHD/VHDX not found: $templateData.template.image.file"; }
+  $ext = $srcvhd.Extension.Substring(1);
+
+  $vhd = "$vmdir\$Name-system.$ext";
   if (!($Resume -and (Test-Path $vhd))) {
-    [void](_New-EasyVMSystemVolume $config $templateData.template.image.file $vhd);
+    [void](_New-EasyVMSystemVolume $config $templateData.template.image.file $ext $vhd);
   }
 
   Write-Host "Staging deployment files..."
@@ -132,9 +143,17 @@ Function Deploy-EasyVM {
   {
     _Set-UnattendHostname $vm.uxml $hostname;
     _Set-UnattendAdminPass $vm.uxml $admincreds;
+    _Set-UnattendRegistration $vm.uxml $config.Owner $config.Org;
     if (!$NoDomainJoin) {
       _Set-UnattendDomainJoin $vm.uxml $config.CorpDomain $domaincreds;
       _Add-UnattendDomainAccount $vm.uxml $domaincreds.userinfo.domain $domaincreds.userinfo.name "Administrators"
+    }
+    if (![String]::IsNullOrEmpty($ProductKey)) {
+      _Set-UnattendProductKey $vm.uxml $ProductKey
+    } elseif (![String]::IsNullOrEmpty($templateData.template.image.productkey)) {
+      _Set-UnattendProductKey $vm.uxml $templateData.template.image.productkey
+    } elseif ($templateData.template.image.SkipProductKey -ne $true) {
+      throw "Product key required";
     }
     _Stage-AutoVM $vm;
     
@@ -183,13 +202,13 @@ Function Deploy-EasyVM {
 
   # Deploy VM
   Write-Host "Creating VM in Hyper-V..."
-  _New-BaseVM $vm.id $config.vswitch $vm.vhd;
+  _New-BaseVM $vm.id $config.vswitch $vm.vhd $config.VSwitchVLAN;
   
   if ($templateData.template.datavol.type -ne "none")
   {
     $datavhd = "$vmdir\$Name-data.vhdx";
     [void](New-Vhd $datavhd -SizeBytes 250GB -Dynamic);
-    [void](Add-VMHardDiskDrive $vm.id IDE -Path $datavhd);
+    [void](Add-VMHardDiskDrive $vm.id -Path $datavhd);
   }
 
   Write-Host "All done!"
@@ -251,14 +270,15 @@ Function Revive-EasyVM {
     throw ("Folder does not exist: " + $vmdir);
   }
 
-  $osvhd = "$vmdir\$Name-system.vhd";
+  $osvhd = _Get-MaybeVhdx "$vmdir\$Name-system";
+  if (!$osvhd) { throw "VHD not found. Clean up $vmdir and use Deploy-EasyVM instead"; }
   $datavhd = "$vmdir\$Name-data.vhdx";
 
   # Deploy VM
   Write-Host "Creating VM in Hyper-V..."
-  _New-BaseVM $Name $config.vswitch $osvhd;
+  _New-BaseVM $Name $config.vswitch $osvhd.FullName $config.VSwitchVLAN;
   if ((gi $datavhd -ea 0) -ne $null) {
-    [void](Add-VMHardDiskDrive $Name IDE -Path $datavhd);
+    [void](Add-VMHardDiskDrive $Name -Path $datavhd);
   }
   
   Write-Host "All done!"
@@ -272,16 +292,32 @@ Function Revive-EasyVM {
 # ----------------------------------------------------------------------------
 #  EasyVM helpers
 # ----------------------------------------------------------------------------
-Function _New-BaseVM($id, $vswitch, $osvhd) {
-  [void](New-VM $id -MemoryStartupBytes 1GB -BootDevice IDE -VHDPath $osvhd);
+Function _New-BaseVM($id, $vswitch, $osvhd, $vlan) {
+  if ((gi $osvhd).Extension.ToLower() -eq ".vhdx") {
+    #Gen2
+    [void](New-VM $id -Generation 2 -MemoryStartupBytes 1GB -VHDPath $osvhd -SwitchName $vswitch);
+    [void](Set-VMFirmware $id -EnableSecureBoot Off)
+  } else {
+    #Gen1
+    [void](New-VM $id -MemoryStartupBytes 1GB -VHDPath $osvhd -SwitchName $vswitch);
+    [void](Set-VMBios $id -EnableNumLock);
+  }
   if ((gcm Set-VM).parameters.keys -contains "CheckpointType") { Set-VM $id -CheckpointType Standard }
-  [void](Set-VMBios $id -EnableNumLock);
   [void](Set-VMMemory $id -DynamicMemoryEnabled $true -MaximumBytes 2GB -MinimumBytes 256MB -StartupBytes 1GB);
-  [void](Set-VMProcessor $id -Count 2);
+  [void](Set-VMProcessor $id -Count 4);
   [void](Set-VMComPort $id -number 1 -path "\\.\pipe\vm$($id)");
-  [void](Remove-VMNetworkAdapter $id);
-  [void](Add-VMNetworkAdapter $id -Name $vswitch);
-  [void](Get-VMNetworkAdapter -VMName $id -Name $vswitch | Connect-VMNetworkAdapter -SwitchName $vswitch);
+  if ($vlan -ne 0) {
+    [void](Set-VMNetworkAdapterVlan -VMName $id -Access -VlanId $vlan);
+  }
+}
+
+Function _Get-MaybeVhdx($file)
+{
+  if (Test-Path "$file.vhdx") {
+    return gi "$file.vhdx";
+  } elseif (Test-Path "$file.vhd") {
+    return gi "$file.vhd";
+  }
 }
 
 Function _Check-EasyVMPrereqs {
@@ -316,18 +352,21 @@ Function _Get-EasyVMConfig {
   if (!(Test-Path $Cachedir)) { [void](mkdir $Cachedir -ea 0); };
   if (!(Test-Path $Cachedir)) { throw "Not found: $Cachedir"; };
   echo "EasyVM will cache standard OS images in this folder. You can delete them to reclaim space.  EasyVM will automatically download them if they are needed in the future." > "$cachedir\README.txt";
-  $joindomain = (_Get-ConfigOrDefault "joindomain" "ntdev.corp.microsoft.com")
+  $joindomain = (_Get-ConfigOrPrompt "joindomain" "$Env:USERDNSDOMAIN" "Please enter the domain for your VM to join.")
 
-  $channel = (_Get-ConfigOrDefault "channel" "v2")
+  $channel = (_Get-ConfigOrDefault "channel" ".")
   $homedir = "$homedir\$channel";
 
-  return New-Object PSObject -Property @{ VSwitch = $vmlan; VmDir = $basedir; TeamDir = $homedir; VhdCache = $cachedir; CorpDomain = $joindomain; };
+  $vlan = (_Get-ConfigOrDefault "vlan" "0")
+  $owner = (_Get-ConfigOrDefault "owner" (gp "HKLM:\Software\Microsoft\Windows NT\CurrentVersion").RegisteredOwner)
+  $org = (_Get-ConfigOrDefault "org" (gp "HKLM:\Software\Microsoft\Windows NT\CurrentVersion").RegisteredOrganization)
+
+  return New-Object PSObject -Property @{ VSwitch = $vmlan; VmDir = $basedir; TeamDir = $homedir; VhdCache = $cachedir; CorpDomain = $joindomain; VSwitchVLAN = $vlan; Owner=$owner; Org=$org; };
 }
 
-function _New-EasyVMSystemVolume ($config, $basevhd, $vhd) {
-  [void](xcopy /Y/D "$($config.TeamDir)\vhd\$($basevhd).vhd" "$($config.VhdCache)\.")
-  copy "$($config.VhdCache)\$($basevhd).vhd" $vhd
-  [void](Resize-VHD $vhd 200GB);
+function _New-EasyVMSystemVolume ($config, $basevhd, $ext, $vhd) {
+  [void](xcopy /Y/D "$($config.TeamDir)\vhd\$($basevhd).$ext" "$($config.VhdCache)\.")
+  New-VHD $vhd -ParentPath "$($config.VhdCache)\$($basevhd).$ext" -Differencing -SizeBytes 200GB;
   return $vhd;
 }
 
@@ -354,7 +393,7 @@ Function _Set-Config ($key, $value) {
   if (!(Get-Item $cfgkey -ea 0)) {
     [void](New-Item $cfgkey -Force);
   }
-  [void](New-ItemProperty $cfgkey -Name $key -PropertyType String -Value $value);
+  [void](New-ItemProperty $cfgkey -Name $key -PropertyType String -Value $value -Force);
 }
 
 Function _Get-ConfigOrDefault ($key, $default) {
@@ -381,26 +420,26 @@ Function _Get-ConfigOrPrompt ($key, $default, $prompt) {
 # ----------------------------------------------------------------------------
 #  From AUTOVM.PS1
 # ----------------------------------------------------------------------------
-  Function _Get-DomainCreds ($g_domaincreds) {
-    if (!$g_domaincreds) {
-      $g_domaincreds = Get-Credential -Message "Enter your domain credentials, for domain join. Format: DOMAIN\UserName";
+  Function _Get-DomainCreds ($creds) {
+    if (!$creds) {
+      $creds = Get-Credential "$Env:USERDOMAIN\$Env:USERNAME" -Message "Enter your domain credentials, for domain join. Format: DOMAIN\UserName";
     }
-    if ($g_domaincreds -and $g_domaincreds.UserName -and $g_domaincreds.UserName.Contains("\")) {
-      if ($g_domaincreds.userinfo -eq $null) {
-        $g_domaincreds | Add-Member userinfo @{
-          domain = $g_domaincreds.UserName.Substring(0, $g_domaincreds.Username.IndexOf("\"));
-          name = $g_domaincreds.UserName.Substring($g_domaincreds.Username.IndexOf("\") + 1);
+    if ($creds -and $creds.UserName -and $creds.UserName.Contains("\")) {
+      if ($creds.userinfo -eq $null) {
+        $creds | Add-Member userinfo @{
+          domain = $creds.UserName.Substring(0, $creds.Username.IndexOf("\"));
+          name = $creds.UserName.Substring($creds.Username.IndexOf("\") + 1);
         };
       }
     }
-    return $g_domaincreds;
+    return $creds;
   }
   
-  function _Get-AdminCreds {
-    if (!$g_admincreds) {
-      $g_admincreds = Get-Credential Administrator -Message "Create the local Administrator password";
+  function _Get-AdminCreds ($creds) {
+    if (!$creds) {
+      $creds = Get-Credential Administrator -Message "Create the local Administrator password";
     }
-    return $g_admincreds;
+    return $creds;
   }
   
   Function _New-AutoVMState ($id, $name, $vhd, $uxml) {
@@ -524,6 +563,51 @@ Function _Add-UnattendDomainAccount ($uxml, $udomain, $uname, $lgroup) {
   [void]($unode.SetAttribute("action", $g_XmlNs["wcm"], "add"));
   _Set-UxTextElement $unode "Name" $uname;
   _Set-UxTextElement $unode "Group" $lgroup;
+}
+
+Function _Set-UnattendRegistration {
+  [CmdletBinding()]
+  Param(
+    [Parameter(Mandatory=$True,Position=0)]
+    [System.Xml.XmlDocument]$Uxml,
+    [Parameter(Mandatory=$True,Position=1)]
+    [string]$Name,
+    [Parameter(Position=2)]
+    [string]$Organization
+  )
+
+  $setup1 = _Get-UnattendCompNode $uxml "windowsPE" "Microsoft-Windows-Setup";
+  $setup2 = _Get-UnattendCompNode $uxml "specialize" "Microsoft-Windows-Shell-Setup";
+  $setup3 = _Get-UnattendCompNode $uxml "oobeSetup" "Microsoft-Windows-Shell-Setup";
+  $setup4 = _Get-UnattendCompNode $uxml "oobeSetup" "Microsoft-Windows-Shell-Setup";
+
+  _Set-UxTextElement $setup1.UserData "FullName" $Name;
+  _Set-UxTextElement $setup2 "RegisteredOwner" $Name;
+  _Set-UxTextElement $setup3 "RegisteredOwner" $Name;
+  _Set-UxTextElement $setup4 "RegisteredOwner" $Name;
+
+  if (![String]::IsNullOrEmpty($Organization)) {
+    _Set-UxTextElement $setup1.UserData "Organization" $Organization;
+    _Set-UxTextElement $setup2 "RegisteredOrganization" $Organization;
+    _Set-UxTextElement $setup3 "RegisteredOrganization" $Organization;
+    _Set-UxTextElement $setup4 "RegisteredOrganization" $Organization;
+  }
+}
+
+Function _Set-UnattendProductKey {
+  [CmdletBinding()]
+  Param(
+    [Parameter(Mandatory=$True,Position=0)]
+    [System.Xml.XmlDocument]$Uxml,
+    [Parameter(Mandatory=$True,Position=1)]
+    [string]$ProductKey
+  )
+
+  $setup1 = _Get-UnattendCompNode $uxml "windowsPE" "Microsoft-Windows-Setup";
+  _Set-UxTextElement $setup1.UserData.ProductKey "Key" $ProductKey;
+
+  $setup2 = _Get-UnattendCompNode $uxml "specialize" "Microsoft-Windows-Shell-Setup";
+  _Set-UxTextElement $setup2 "ProductKey" $ProductKey;
 }
 
 Export-ModuleMember -Function Deploy-EasyVM

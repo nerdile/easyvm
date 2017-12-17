@@ -1,0 +1,6 @@
+<template version="1">
+  <image file="14393.serverdatacenter" productkey="W3GGN-FT8W3-Y4M27-J84CP-Q3VJ9"/>
+  <tasks>
+    <task id="corevm-drive-setup"/>
+  </tasks>
+</template>
