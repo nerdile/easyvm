@@ -1,6 +1,0 @@
-<template version="1">
-  <image file="16299.client.enterprise" key="NPPR9-FWDCX-D2C8J-H872K-2YT43"/>
-  <tasks>
-    <task id="corevm-drive-setup"/>
-  </tasks>
-</template>

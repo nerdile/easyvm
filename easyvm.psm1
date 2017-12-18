@@ -339,7 +339,7 @@ Function _Get-EasyVMConfig {
   if (!($vmlan)) {
     $switches = (Get-VMSwitch);
     if ($switches -eq $null -or $switches.length -eq 0) { throw "You need at least one vswitch."; }
-    Write-Host "Which switch is connected to CorpNet?"
+    Write-Host "Which vswitch do you want to use?"
     $switches | ft Name | Out-Host;
     $vmlan = (_Get-ConfigOrPrompt "vmlan" $switches[0].Name "If none of the above, hit Ctrl-C and go create a corpnet vswitch.");
   }
