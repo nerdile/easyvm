@@ -226,9 +226,11 @@ Function Deploy-EasyVM {
     [void](Add-VMHardDiskDrive $vm.id -Path $datavhd);
   }
 
-  Write-Host "All done!"
+  Write-Host "VM created!"
   vmconnect localhost $name
   if (!$NoBoot) {
+    Write-Host "The VM will now start to prepare itself."
+    Write-Host "It will be ready when it shows the lock screen."
     Start-VM $vm.id
   }
   $ErrorActionPreference = $myeap;
@@ -387,7 +389,14 @@ Function _Get-EasyVMConfig {
 
 function _New-EasyVMSystemVolume ($config, $basevhd, $arch, $ext, $vhd) {
   [void](xcopy /Y/D "$($config.TeamDir)\vhd\$($basevhd).$arch.$ext" "$($config.VhdCache)\.")
-  New-VHD $vhd -ParentPath "$($config.VhdCache)\$($basevhd).$arch.$ext" -Differencing -SizeBytes 200GB;
+  if ($ext.ToLower() -eq "vhdx") {
+    New-VHD $vhd -ParentPath "$($config.VhdCache)\$($basevhd).$arch.$ext" -Differencing -SizeBytes 200GB;
+  } else {
+    copy "$($config.VhdCache)\$($basevhd).$arch.$ext" $vhd
+    if ((get-vhd $vhd).Size -lt 200GB) {
+      [void](Resize-VHD $vhd 200GB);
+    }
+  }
   return $vhd;
 }
 
