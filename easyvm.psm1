@@ -379,12 +379,19 @@ Function _Is-Admin {
 }
 
 Function _Get-Config ($key) {
-  $cfgkey = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Awesome\EasyVM";
-  $value = Get-ItemProperty -Path $cfgkey -Name $key -ea 0;
+  $cfgkey1 = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Awesome\EasyVM";
+  $cfgkey2 = "Registry::HKEY_CURRENT_USER\SOFTWARE\Awesome\EasyVM";
+
+  $value = Get-ItemProperty -Path $cfgkey1 -Name $key -ea 0;
   if ($value) {
     return ($value | Select-Object -ExpandProperty $key);
   } else {
-    return $null;
+    $value = Get-ItemProperty -Path $cfgkey2 -Name $key -ea 0;
+    if ($value) {
+      return ($value | Select-Object -ExpandProperty $key);
+    } else {
+      return $null;
+    }
   }
 }
 
