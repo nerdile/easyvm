@@ -73,7 +73,9 @@ Function Deploy-EasyVM {
     [Parameter()]
     [PSCredential] $DomainCreds,
     [Parameter()]
-    [string] $ProductKey
+    [string] $ProductKey,
+    [string] $Arch="amd64",
+    [string] $Gen="2"
   )
   
   $myeap = $ErrorActionPreference;
@@ -108,8 +110,8 @@ Function Deploy-EasyVM {
   # Get the interactive prompts out of the way before we start copying vhd's around
   if ($templateData.template.image.prep -ne "none")
   {
-    $xml = gi "$T\unattend.xml" -ea 0
-    if (!$xml) { $xml = gi "$T\..\unattend.xml" }
+    $xml = gi "$T\unattend.$Arch.xml" -ea 0
+    if (!$xml) { $xml = gi "$T\..\unattend.$Arch.xml" }
 
     $uxml = [xml](gc $xml);
     $AdminCreds = _Get-AdminCreds $AdminCreds;
@@ -117,22 +119,21 @@ Function Deploy-EasyVM {
       throw "This template cannot be used with -NoDomainJoin.";
     }
     
-    $DomainCreds = _Get-DomainCreds $DomainCreds;
-    
     # Get User Credentials
     if (!($NoDomainJoin)) {
+      $DomainCreds = _Get-DomainCreds $DomainCreds;
       if (!$domaincreds) { throw "To skip domain join, use -NoDomainJoin." };
     }
   }
 
   Write-Host "Creating system volume..."
-  $srcvhd = _Get-MaybeVhdx "$($config.TeamDir)\vhd\$($templateData.template.image.file)"
-  if (!$srcvhd) { throw "VHD/VHDX not found: $templateData.template.image.file"; }
+  $srcvhd = _Get-MaybeVhdx "$($config.TeamDir)\vhd\$($templateData.template.image.file).$Arch"
+  if (!$srcvhd) { throw "VHD/VHDX not found: $($templateData.template.image.file)"; }
   $ext = $srcvhd.Extension.Substring(1);
 
   $vhd = "$vmdir\$Name-system.$ext";
   if (!($Resume -and (Test-Path $vhd))) {
-    [void](_New-EasyVMSystemVolume $config $templateData.template.image.file $ext $vhd);
+    [void](_New-EasyVMSystemVolume $config $templateData.template.image.file $Arch $ext $vhd);
   }
 
   Write-Host "Staging deployment files..."
@@ -364,9 +365,9 @@ Function _Get-EasyVMConfig {
   return New-Object PSObject -Property @{ VSwitch = $vmlan; VmDir = $basedir; TeamDir = $homedir; VhdCache = $cachedir; CorpDomain = $joindomain; VSwitchVLAN = $vlan; Owner=$owner; Org=$org; };
 }
 
-function _New-EasyVMSystemVolume ($config, $basevhd, $ext, $vhd) {
-  [void](xcopy /Y/D "$($config.TeamDir)\vhd\$($basevhd).$ext" "$($config.VhdCache)\.")
-  New-VHD $vhd -ParentPath "$($config.VhdCache)\$($basevhd).$ext" -Differencing -SizeBytes 200GB;
+function _New-EasyVMSystemVolume ($config, $basevhd, $arch, $ext, $vhd) {
+  [void](xcopy /Y/D "$($config.TeamDir)\vhd\$($basevhd).$arch.$ext" "$($config.VhdCache)\.")
+  New-VHD $vhd -ParentPath "$($config.VhdCache)\$($basevhd).$arch.$ext" -Differencing -SizeBytes 200GB;
   return $vhd;
 }
 
@@ -463,7 +464,7 @@ Function _Get-ConfigOrPrompt ($key, $default, $prompt) {
   Function _Mount-AutoVM ($vm) {
     $done = $false;
     [void](Dismount-VHD $vm.vhd -ea 0);
-    $vm.Drive = (Mount-VHD -Path $vm.vhd -PassThru | Get-Disk | Get-Partition | Get-Volume)[0].DriveLetter;
+    $vm.Drive = (Mount-VHD -Path $vm.vhd -PassThru | Get-Disk | Get-Partition | Get-Volume | ?{ $_.DriveLetter })[0].DriveLetter;
     Sleep 1
   }
   
