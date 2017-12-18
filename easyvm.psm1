@@ -56,6 +56,10 @@
   VM generation.  x86 must be Gen1.  amd64 can be either.
   Default is Gen2 for performance reasons.
 
+.PARAMETER OverrideVHD
+  Use a different VHD than the one from the template. Can be a VHD ID or
+  a full path to VHD.
+
 .EXAMPLE
   Make a new server VM.  The following two commands are equivalent.
   
@@ -89,7 +93,8 @@ Function Deploy-EasyVM {
     [ValidateSet("amd64","x86")]
     [string] $Arch="amd64",
     [ValidateSet("1","2","default")]
-    [string] $Gen="default"
+    [string] $Gen="default",
+    [string] $OverrideVHD
   )
  
   $myeap = $ErrorActionPreference;
@@ -147,7 +152,7 @@ Function Deploy-EasyVM {
 
   $vhd = "$vmdir\$Name-system.$ext";
   if (!($Resume -and (Test-Path $vhd))) {
-    [void](_New-EasyVMSystemVolume $config $templateData.template.image.file $Arch $ext $vhd);
+    [void](_New-EasyVMSystemVolume $config $templateData.template.image.file $Arch $ext $vhd $OverrideVHD);
   }
 
   Write-Host "Staging deployment files..."
@@ -387,12 +392,19 @@ Function _Get-EasyVMConfig {
   return New-Object PSObject -Property @{ VSwitch = $vmlan; VmDir = $basedir; TeamDir = $homedir; VhdCache = $cachedir; CorpDomain = $joindomain; VSwitchVLAN = $vlan; Owner=$owner; Org=$org; };
 }
 
-function _New-EasyVMSystemVolume ($config, $basevhd, $arch, $ext, $vhd) {
-  [void](xcopy /Y/D "$($config.TeamDir)\vhd\$($basevhd).$arch.$ext" "$($config.VhdCache)\.")
+function _New-EasyVMSystemVolume ($config, $basevhd, $arch, $ext, $vhd, $ovhd) {
+  if ($ovhd -and (Test-Path $ovhd)) { copy $ovhd $vhd; return $vhd; }
+  if ($ovhd -and (Test-Path "$ovhd.$arch.$ext")) { copy "$ovhd.$arch.$ext" $vhd; return $vhd; }
+  $srcvhd = "$($basevhd).$arch.$ext";
+  if ($ovhd -and (Test-Path "$($config.TeamDir)\vhd\$ovhd")) { $srcvhd = $ovhd; }
+  if ($ovhd -and (Test-Path "$($config.TeamDir)\vhd\$ovhd.$ext")) { $srcvhd = "$ovhd.$ext"; }
+  if ($ovhd -and (Test-Path "$($config.TeamDir)\vhd\$ovhd.$arch.$ext")) { $srcvhd = "$ovhd.$arch.$ext"; }
+
+  [void](xcopy /Y/D "$($config.TeamDir)\vhd\$srcvhd" "$($config.VhdCache)\.")
   if ($ext.ToLower() -eq "vhdx") {
-    New-VHD $vhd -ParentPath "$($config.VhdCache)\$($basevhd).$arch.$ext" -Differencing -SizeBytes 200GB;
+    New-VHD $vhd -ParentPath "$($config.VhdCache)\$srcvhd" -Differencing -SizeBytes 200GB;
   } else {
-    copy "$($config.VhdCache)\$($basevhd).$arch.$ext" $vhd
+    copy "$($config.VhdCache)\$srcvhd" $vhd
     if ((get-vhd $vhd).Size -lt 200GB) {
       [void](Resize-VHD $vhd 200GB);
     }
