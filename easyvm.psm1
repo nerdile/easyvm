@@ -44,7 +44,18 @@
 .PARAMETER DomainCreds
   PSCredential object (See Get-Credential) with the domain, user, and password
   to use for domain joining the VM.
-  
+
+.PARAMETER ProductKey
+  Product key for the the image.
+
+.PARAMETER Arch
+  Architecture: amd64 or x86.  Not all images support both architectures.
+  Default is amd64 for performance reasons.
+
+.PARAMETER Gen
+  VM generation.  x86 must be Gen1.  amd64 can be either.
+  Default is Gen2 for performance reasons.
+
 .EXAMPLE
   Make a new server VM.  The following two commands are equivalent.
   
@@ -73,11 +84,14 @@ Function Deploy-EasyVM {
     [Parameter()]
     [PSCredential] $DomainCreds,
     [Parameter()]
+    [ValidateLength(29,29)]
     [string] $ProductKey,
+    [ValidateSet("amd64","x86")]
     [string] $Arch="amd64",
-    [string] $Gen="2"
+    [ValidateSet("1","2","default")]
+    [string] $Gen="default"
   )
-  
+ 
   $myeap = $ErrorActionPreference;
   $ErrorActionPreference = "Stop";
   
@@ -127,7 +141,7 @@ Function Deploy-EasyVM {
   }
 
   Write-Host "Creating system volume..."
-  $srcvhd = _Get-MaybeVhdx "$($config.TeamDir)\vhd\$($templateData.template.image.file).$Arch"
+  $srcvhd = _Get-MaybeVhdx "$($config.TeamDir)\vhd\$($templateData.template.image.file).$Arch" $Gen
   if (!$srcvhd) { throw "VHD/VHDX not found: $($templateData.template.image.file)"; }
   $ext = $srcvhd.Extension.Substring(1);
 
@@ -312,11 +326,17 @@ Function _New-BaseVM($id, $vswitch, $osvhd, $vlan) {
   }
 }
 
-Function _Get-MaybeVhdx($file)
+Function _Get-MaybeVhdx($file, $gen)
 {
-  if (Test-Path "$file.vhdx") {
+  if (!$gen -or ($gen -eq "default")) {
+    if (Test-Path "$file.vhdx") {
+      return gi "$file.vhdx";
+    } elseif (Test-Path "$file.vhd") {
+      return gi "$file.vhd";
+    }
+  } elseif ($gen -eq "2" -and (Test-Path "$file.vhdx")) {
     return gi "$file.vhdx";
-  } elseif (Test-Path "$file.vhd") {
+  } elseif ($gen -eq "1" -and (Test-Path "$file.vhd")) {
     return gi "$file.vhd";
   }
 }
