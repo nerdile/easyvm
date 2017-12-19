@@ -115,7 +115,7 @@ Function Deploy-EasyVM {
 
   # Check global setup
   if (!(_Check-EasyVMPrereqs)) { throw "Prerequisites not met."; };
-  $config = _Get-EasyVMConfig;
+  $config = Get-EasyVMConfig;
 
   # Validate parameters
   if (Get-VM $Name -ea 0) { throw "VM already exists: $Name"; }
@@ -301,7 +301,7 @@ Function Revive-EasyVM {
   
   # Check global setup
   if (!(_Check-EasyVMPrereqs)) { throw "Prerequisites not met."; };
-  $config = _Get-EasyVMConfig;
+  $config = Get-EasyVMConfig;
 
   # Validate parameters
   if (Get-VM $Name -ea 0) { throw "VM already exists: $Name"; }
@@ -381,7 +381,7 @@ Function _Check-EasyVMPrereqs {
   return $prereqs;
 }
 
-Function _Get-EasyVMConfig {
+Function Get-EasyVMConfig {
   $vmlan = _Get-Config "vmlan";
   if (!($vmlan)) {
     $switches = (Get-VMSwitch);
@@ -697,7 +697,7 @@ Function _Set-UnattendProductKey {
 }
 
 Function Get-EasyVMCache() {
-  $config = _Get-EasyVMConfig;
+  $config = Get-EasyVMConfig;
   return $config.VhdCache;
 }
 
@@ -713,3 +713,5 @@ Export-ModuleMember -Function Deploy-EasyVM
 Export-ModuleMember -Function Revive-EasyVM
 Export-ModuleMember -Function Get-EasyVMCache
 Export-ModuleMember -Function Clean-EasyVMCache
+Export-ModuleMember -Function Get-EasyVMConfig
+
