@@ -75,7 +75,7 @@ if ($tasks -eq $null -or $tasks.length -eq 0) {
       }
       if (Test-Path desktop\.) {
         log " ->   Processing desktop icons"
-        xcopy desktop\* $Env:SystemDrive\Users\Public\Desktop\.
+        xcopy /d /s /q /y desktop\* $Env:SystemDrive\Users\Public\Desktop\
       }
 
       log " -> End Task"

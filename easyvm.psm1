@@ -60,6 +60,10 @@
   Use a different VHD than the one from the template. Can be a VHD ID or
   a full path to VHD.
 
+.PARAMETER AddTask
+  Add tasks in addition to the ones from the template. Can be a task ID or
+  a full path to a task folder.
+
 .EXAMPLE
   Make a new server VM.  The following two commands are equivalent.
   
@@ -94,7 +98,8 @@ Function Deploy-EasyVM {
     [string] $Arch="amd64",
     [ValidateSet("1","2","default")]
     [string] $Gen="default",
-    [string] $OverrideVHD
+    [string] $OverrideVHD,
+    [string[]] $AddTask
   )
  
   $myeap = $ErrorActionPreference;
@@ -205,6 +210,20 @@ Function Deploy-EasyVM {
         $tid = $task.id;
         Write-Host "  Staging task: $tid"
         xcopy /S/Y/Q "$($config.teamdir)\TaskLibrary\$tid\*" "$($vm.Drive):\deploy.temp\$tid\"
+        $client_tasks.SelectSingleNode("tasks").InnerXml += "<task id='$tid'/>";
+      }
+      foreach ($task in $AddTask) {
+        if (Test-Path ($task)) {
+          $tid = (gi $task).Name;
+          Write-Host "  Staging task: $tid"
+          xcopy /S/Y/Q "$task\*" "$($vm.Drive):\deploy.temp\$tid\"
+        } elseif (Test-Path "$($config.teamdir)\TaskLibrary\$task") {
+          $tid = $task;
+          Write-Host "  Staging task: $tid"
+          xcopy /S/Y/Q "$($config.teamdir)\TaskLibrary\$tid\*" "$($vm.Drive):\deploy.temp\$tid\"
+        } else {
+          throw "Task not found: $task";
+        }
         $client_tasks.SelectSingleNode("tasks").InnerXml += "<task id='$tid'/>";
       }
       $client_tasks.Save("$($vm.Drive):\deploy.temp\tasks.xml");
@@ -392,18 +411,36 @@ Function _Get-EasyVMConfig {
   return New-Object PSObject -Property @{ VSwitch = $vmlan; VmDir = $basedir; TeamDir = $homedir; VhdCache = $cachedir; CorpDomain = $joindomain; VSwitchVLAN = $vlan; Owner=$owner; Org=$org; };
 }
 
-function _New-EasyVMSystemVolume ($config, $basevhd, $arch, $ext, $vhd, $ovhd) {
-  if ($ovhd -and (Test-Path $ovhd)) { copy $ovhd $vhd; return $vhd; }
-  if ($ovhd -and (Test-Path "$ovhd.$arch.$ext")) { copy "$ovhd.$arch.$ext" $vhd; return $vhd; }
-  $srcvhd = "$($basevhd).$arch.$ext";
-  if ($ovhd -and (Test-Path "$($config.TeamDir)\vhd\$ovhd")) { $srcvhd = $ovhd; }
-  if ($ovhd -and (Test-Path "$($config.TeamDir)\vhd\$ovhd.$ext")) { $srcvhd = "$ovhd.$ext"; }
-  if ($ovhd -and (Test-Path "$($config.TeamDir)\vhd\$ovhd.$arch.$ext")) { $srcvhd = "$ovhd.$arch.$ext"; }
+function _Find-VhdSource($ovhd, $arch, $ext) {
+  if (Test-Path $ovhd) { return $ovhd; }
+  if (Test-Path "$ovhd.$ext") { return "$ovhd.$ext"; }
+  if (Test-Path "$ovhd.$arch.$ext") { return "$ovhd.$arch.$ext"; }
+}
+function _Cache-VhdSource($ovhd) {
 
-  [void](xcopy /Y/D "$($config.TeamDir)\vhd\$srcvhd" "$($config.VhdCache)\.")
-  if ($ext.ToLower() -eq "vhdx") {
-    New-VHD $vhd -ParentPath "$($config.VhdCache)\$srcvhd" -Differencing -SizeBytes 200GB;
+}
+
+function _New-EasyVMSystemVolume ($config, $basevhd, $arch, $ext, $vhd, $ovhd) {
+  if ($ovhd) {
+    $templatevhd = _Find-VhdSource $ovhd $arch $ext;
+    if (!$templatevhd) {
+      $templatevhd = _Find-VhdSource "$($config.TeamDir)\vhd\$ovhd" $arch $ext;
+    }
+    if (!$templatevhd) { throw "OverrideVHD not found: $ovhd"; }
   } else {
+    $templatevhd = _Find-VhdSource $basevhd $arch $ext;
+    if (!$templatevhd) { throw "VHD not found: $basevhd $arch $ext"; }
+  }
+  $cachedName = (gi $templatevhd).Name;
+  Write-Verbose "System Volume Template: $templatevhd";
+  Write-Verbose "Cached as: $($config.VhdCache)\$cachedName";
+
+  [void](xcopy /Y/D "$templatevhd" "$($config.VhdCache)\")
+  if ((gi $templatevhd).Extension.ToLower() -eq ".vhdx") {
+    Write-Verbose "System Volume: Creating a differencing disk..."
+    New-VHD $vhd -ParentPath "$($config.VhdCache)\$cachedName" -Differencing -SizeBytes 200GB;
+  } else {
+    Write-Verbose "System Volume: Copying..."
     copy "$($config.VhdCache)\$srcvhd" $vhd
     if ((get-vhd $vhd).Size -lt 200GB) {
       [void](Resize-VHD $vhd 200GB);
@@ -659,5 +696,20 @@ Function _Set-UnattendProductKey {
   _Set-UxTextElement $setup2 "ProductKey" $ProductKey;
 }
 
+Function Get-EasyVMCache() {
+  $config = _Get-EasyVMConfig;
+  return $config.VhdCache;
+}
+
+Function Clean-EasyVMCache() {
+  $cachedir = _Get-Config "pristine";
+  if ($cachedir) {
+    $subfolders = dir "$cacheDir\*";
+    $subfolders | %{ del $_ -Confirm }
+  }
+}
+
 Export-ModuleMember -Function Deploy-EasyVM
 Export-ModuleMember -Function Revive-EasyVM
+Export-ModuleMember -Function Get-EasyVMCache
+Export-ModuleMember -Function Clean-EasyVMCache
