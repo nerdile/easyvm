@@ -121,7 +121,7 @@ Function Deploy-EasyVM {
   if (Get-VM $Name -ea 0) { throw "VM already exists: $Name"; }
 
   $vmdir = "$($config.vmdir)\$Name";
-  if ((Test-Path "$vmdir") -and !$Resume) {
+  if ((Test-Path "$vmdir") -and ((gci "$vmdir").Count -gt 0) -and !$Resume) {
     throw "Folder already exists: $vmdir.  Use -Resume to jump right to staging.";
   }
   [void](mkdir "$vmdir" -ea 0);
