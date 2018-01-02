@@ -112,6 +112,7 @@ Function Deploy-EasyVM {
       $Hostname = $Name;
     }
   }
+  if ($Hostname.Length -gt 15) { throw "Hostname too long: $Hostname"; }
 
   # Check global setup
   if (!(_Check-EasyVMPrereqs)) { throw "Prerequisites not met."; };
@@ -121,7 +122,7 @@ Function Deploy-EasyVM {
   if (Get-VM $Name -ea 0) { throw "VM already exists: $Name"; }
 
   $vmdir = "$($config.vmdir)\$Name";
-  if ((Test-Path "$vmdir") -and ((gci "$vmdir").Count -gt 0) -and !$Resume) {
+  if ((Test-Path "$vmdir") -and ((gci $vmdir).Count -gt 0) -and !$Resume) {
     throw "Folder already exists: $vmdir.  Use -Resume to jump right to staging.";
   }
   [void](mkdir "$vmdir" -ea 0);
@@ -428,7 +429,7 @@ function _New-EasyVMSystemVolume ($config, $basevhd, $arch, $ext, $vhd, $ovhd) {
     }
     if (!$templatevhd) { throw "OverrideVHD not found: $ovhd"; }
   } else {
-    $templatevhd = _Find-VhdSource $basevhd $arch $ext;
+    $templatevhd = _Find-VhdSource "$($config.TeamDir)\vhd\$basevhd" $arch $ext;
     if (!$templatevhd) { throw "VHD not found: $basevhd $arch $ext"; }
   }
   $cachedName = (gi $templatevhd).Name;
