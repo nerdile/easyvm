@@ -20,7 +20,7 @@ function log ($msg) {
 $done = $false;
 
 $tasks = $taskxml.SelectNodes("/tasks/task");
-if ($tasks -eq $null -or $tasks.length -eq 0) {
+if ($tasks -eq $null -or $tasks.Count -eq 0) {
   log " -> No more tasks"
   $done = $true;
   Remove-ItemProperty $runKey $runValue;
@@ -38,7 +38,8 @@ if ($tasks -eq $null -or $tasks.length -eq 0) {
       log " -> Loading next task"
       
       # Pop next entry from list
-      $task = $tasks[0];
+      #   Note: $tasks[0] does not work on Win7 - can't index into an XPathNodeList
+      $task = $taskxml.SelectSingleNode("/tasks/task");
       $t = $task.id;
       log " ->   Name: $t"
 

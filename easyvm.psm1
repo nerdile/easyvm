@@ -60,6 +60,10 @@
   Use a different VHD than the one from the template. Can be a VHD ID or
   a full path to VHD.
 
+.PARAMETER NoCache
+  Do not cache the template VHD, and do not use a cached VHD.  Just copy
+  the template VHD into place and resize.
+
 .PARAMETER AddTask
   Add tasks in addition to the ones from the template. Can be a task ID or
   a full path to a task folder.
@@ -99,6 +103,7 @@ Function Deploy-EasyVM {
     [ValidateSet("1","2","default")]
     [string] $Gen="default",
     [string] $OverrideVHD,
+    [switch] $NoCache,
     [string[]] $AddTask
   )
  
@@ -152,13 +157,19 @@ Function Deploy-EasyVM {
   }
 
   Write-Host "Creating system volume..."
-  $srcvhd = _Get-MaybeVhdx "$($config.TeamDir)\vhd\$($templateData.template.image.file).$Arch" $Gen
-  if (!$srcvhd) { throw "VHD/VHDX not found: $($templateData.template.image.file)"; }
+
+  if ($OverrideVHD) {
+    $srcvhd = _Get-MaybeVhdx $OverrideVHD $Arch $Gen
+    if (!$srcvhd) { throw "VHD/VHDX not found: $OverrideVHD"; }
+  } else {
+    $srcvhd = _Get-MaybeVhdx "$($config.TeamDir)\vhd\$($templateData.template.image.file)" $Arch $Gen
+    if (!$srcvhd) { throw "VHD/VHDX not found: $($templateData.template.image.file)"; }
+  }
   $ext = $srcvhd.Extension.Substring(1);
 
   $vhd = "$vmdir\$Name-system.$ext";
   if (!($Resume -and (Test-Path $vhd))) {
-    [void](_New-EasyVMSystemVolume $config $templateData.template.image.file $Arch $ext $vhd $OverrideVHD);
+    [void](_New-EasyVMSystemVolume $config $templateData.template.image.file $Arch $ext $vhd $OverrideVHD $NoCache);
   }
 
   Write-Host "Staging deployment files..."
@@ -353,19 +364,21 @@ Function _New-BaseVM($id, $vswitch, $osvhd, $vlan) {
   }
 }
 
-Function _Get-MaybeVhdx($file, $gen)
+function _Find-VhdSource($ovhd, $arch, $ext) {
+  if (Test-Path $ovhd) { return $ovhd; }
+  if ($ext -and (Test-Path "$ovhd.$ext")) { return "$ovhd.$ext"; }
+  if ($ext -and (Test-Path "$ovhd.$arch.$ext")) { return "$ovhd.$arch.$ext"; }
+}
+
+Function _Get-MaybeVhdx($file, $arch, $gen)
 {
-  if (!$gen -or ($gen -eq "default")) {
-    if (Test-Path "$file.vhdx") {
-      return gi "$file.vhdx";
-    } elseif (Test-Path "$file.vhd") {
-      return gi "$file.vhd";
-    }
-  } elseif ($gen -eq "2" -and (Test-Path "$file.vhdx")) {
-    return gi "$file.vhdx";
-  } elseif ($gen -eq "1" -and (Test-Path "$file.vhd")) {
-    return gi "$file.vhd";
+  $result = $null;
+  if ($gen -ne "1") {
+    $result = _Find-VhdSource $file $arch "vhdx";
+  } if (!$result -and $gen -ne "2") {
+    $result = _Find-VhdSource $file $arch "vhd";
   }
+  if ($result) { return gi $result; }
 }
 
 Function _Check-EasyVMPrereqs {
@@ -412,39 +425,43 @@ Function Get-EasyVMConfig {
   return New-Object PSObject -Property @{ VSwitch = $vmlan; VmDir = $basedir; TeamDir = $homedir; VhdCache = $cachedir; CorpDomain = $joindomain; VSwitchVLAN = $vlan; Owner=$owner; Org=$org; };
 }
 
-function _Find-VhdSource($ovhd, $arch, $ext) {
-  if (Test-Path $ovhd) { return $ovhd; }
-  if (Test-Path "$ovhd.$ext") { return "$ovhd.$ext"; }
-  if (Test-Path "$ovhd.$arch.$ext") { return "$ovhd.$arch.$ext"; }
-}
-function _Cache-VhdSource($ovhd) {
-
-}
-
-function _New-EasyVMSystemVolume ($config, $basevhd, $arch, $ext, $vhd, $ovhd) {
+function _New-EasyVMSystemVolume ($config, $basevhd, $arch, $ext, $vhd, $ovhd, $nocache) {
   if ($ovhd) {
-    $templatevhd = _Find-VhdSource $ovhd $arch $ext;
-    if (!$templatevhd) {
-      $templatevhd = _Find-VhdSource "$($config.TeamDir)\vhd\$ovhd" $arch $ext;
-    }
-    if (!$templatevhd) { throw "OverrideVHD not found: $ovhd"; }
-  } else {
-    $templatevhd = _Find-VhdSource "$($config.TeamDir)\vhd\$basevhd" $arch $ext;
-    if (!$templatevhd) { throw "VHD not found: $basevhd $arch $ext"; }
+    $basevhd = $ovhd;
+    $templatevhd = _Find-VhdSource $basevhd $arch $ext;
   }
-  $cachedName = (gi $templatevhd).Name;
-  Write-Verbose "System Volume Template: $templatevhd";
-  Write-Verbose "Cached as: $($config.VhdCache)\$cachedName";
+  if (!$templatevhd -and !$nocache) {
+    $templatevhd = _Find-VhdSource "$($config.VhdCache)\vhd\$basevhd" $arch $ext;
+  }
+  if (!$templatevhd) {
+    $templatevhd = _Find-VhdSource "$($config.TeamDir)\vhd\$basevhd" $arch $ext;
+  }
+  if (!$templatevhd) { throw "VHD not found: $basevhd"; }
 
-  [void](xcopy /Y/D "$templatevhd" "$($config.VhdCache)\")
-  if ((gi $templatevhd).Extension.ToLower() -eq ".vhdx") {
-    Write-Verbose "System Volume: Creating a differencing disk..."
-    New-VHD $vhd -ParentPath "$($config.VhdCache)\$cachedName" -Differencing -SizeBytes 200GB;
-  } else {
-    Write-Verbose "System Volume: Copying..."
-    copy "$($config.VhdCache)\$srcvhd" $vhd
+  Write-Verbose "System Volume Template: $templatevhd";
+
+  if ($nocache) {
+    Write-Verbose "Not caching this disk due to -nocache parameter"
+    copy $templatevhd $vhd;
     if ((get-vhd $vhd).Size -lt 200GB) {
       [void](Resize-VHD $vhd 200GB);
+    }
+  } else {
+    $cachedName = (gi $templatevhd).Name;
+    Write-Verbose "Cached as: $($config.VhdCache)\$cachedName";
+
+    if ($templatevhd -ne "$($config.VhdCache)\$cachedName") {
+      [void](xcopy /Y/D "$templatevhd" "$($config.VhdCache)\")
+    }
+    if ((gi $templatevhd).Extension.ToLower() -eq ".vhdx") {
+      Write-Verbose "System Volume: Creating a differencing disk..."
+      New-VHD $vhd -ParentPath "$($config.VhdCache)\$cachedName" -Differencing -SizeBytes 200GB;
+    } else {
+      Write-Verbose "System Volume: Copying..."
+      copy "$($config.VhdCache)\$cachedName" $vhd
+      if ((get-vhd $vhd).Size -lt 200GB) {
+        [void](Resize-VHD $vhd 200GB);
+      }
     }
   }
   return $vhd;
@@ -604,13 +621,14 @@ Function _Get-UnattendPassNode($uxml, $pass) {
 }
 
 Function _Get-UnattendCompNode($uxml, $pass, $comp) {
+  $arch = $uxml.SelectSingleNode("//@processorArchitecture").Value;
   $parent = _Get-UnattendPassNode $uxml $pass;
   $node = $parent.SelectSingleNode("ux:component[@name='$comp']", $g_XmlNsmgr);
   if (!$node) {
     $node = _Add-XmlNode $parent "component" $g_XmlNs["ux"];
     @{ `
       name = $comp; `
-      processorArchitecture = "amd64"; `
+      processorArchitecture = $arch; `
       publicKeyToken = "31bf3856ad364e35"; `
       language = "neutral"; `
       versionScope = "nonSxS" `
