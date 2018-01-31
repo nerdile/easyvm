@@ -176,6 +176,7 @@ Function Deploy-EasyVM {
   $vm = _New-AutoVMState $Name $Hostname $vhd $uxml
 
   # Prepare the VHD if necessary
+  $passwordWarning = $true;
   if ($templateData.template.image.prep -ne "none")
   {
     _Set-UnattendHostname $vm.uxml $hostname;
@@ -193,52 +194,71 @@ Function Deploy-EasyVM {
       throw "Product key required";
     }
     _Stage-AutoVM $vm;
-    
+
     try {
       echo "$((date).ToString()): Staged from $T" > "$($vm.Staging)\DeploymentLog.txt"
       [void]($vm.Uxml.Save("$($vm.Staging)\unattend.xml"));
-      [void](mkdir "$($vm.Staging)\Windows\Setup\Scripts" -Force -ea 0);
-      [void](mkdir "$($vm.Staging)\deploy.temp" -Force -ea 0);
-      [void](mkdir "$($vm.Staging)\deploy.temp\_easyvm_" -Force -ea 0);
-      copy "$($config.teamdir)\Support\SetupComplete.cmd" "$($vm.Staging)\Windows\Setup\Scripts\."
-      copy "$($config.teamdir)\Support\RunDeploymentTasks.ps1" "$($vm.Staging)\Windows\Setup\Scripts\."
-      xcopy /S/Y/Q "$($config.teamdir)\Support\Tools\*" "$($vm.Staging)\deploy.temp\_easyvm_\"
-      
-      _Mount-AutoVM $vm;
-      $postinstall = "$($vm.Drive):\Windows\Setup\Scripts\SetupComplete.cmd";
-      $postinstall2 = "$($vm.Drive):\Windows\Setup\Scripts\SetupComplete_easyvm.cmd";
-      if (Test-Path $postinstall) {
-        if (!(Test-Path $postinstall2)) {
-          ren $postinstall $postinstall2;
-        }
+
+      if ($templateData.template.image.prep -ne "unattendOnly")
+      {
+        [void](mkdir "$($vm.Staging)\Windows\Setup\Scripts" -Force -ea 0);
+        [void](mkdir "$($vm.Staging)\deploy.temp" -Force -ea 0);
+        [void](mkdir "$($vm.Staging)\deploy.temp\_easyvm_" -Force -ea 0);
+        copy "$($config.teamdir)\Support\SetupComplete.cmd" "$($vm.Staging)\Windows\Setup\Scripts\."
+        copy "$($config.teamdir)\Support\RunDeploymentTasks.ps1" "$($vm.Staging)\Windows\Setup\Scripts\."
+        xcopy /S/Y/Q "$($config.teamdir)\Support\Tools\*" "$($vm.Staging)\deploy.temp\_easyvm_\"
+        $passwordWarning = $false;
+        # SetupComplete deletes the unattend file
       }
-      $client_tasks = [xml]("<tasks/>")
+
+      _Mount-AutoVM $vm;
+      if (Test-Path "$T\unattend.offline.xml") {
+        (gc "$T\unattend.offline.xml").Replace("`$arch",$arch) | Set-Content "$($vm.Staging)\unattend.offline.xml" -Encoding UTF8;
+        $dism_command = "dism.exe /Image:$($vm.Drive):\ /Apply-Unattend:$($vm.Staging)\unattend.offline.xml";
+        Write-Verbose $dism_command;
+        iex $dism_command;
+      }
+
+      if ($templateData.template.image.prep -ne "unattendOnly")
+      {
+        $postinstall = "$($vm.Drive):\Windows\Setup\Scripts\SetupComplete.cmd";
+        $postinstall2 = "$($vm.Drive):\Windows\Setup\Scripts\SetupComplete_easyvm.cmd";
+        if (Test-Path $postinstall) {
+          if (!(Test-Path $postinstall2)) {
+            ren $postinstall $postinstall2;
+          }
+        }
+        $client_tasks = [xml]("<tasks/>")
+      }
       xcopy /S/Y/Q "$($vm.Staging)\*" "$($vm.Drive):\"
       if (Test-Path "$T\Staging") {
         Write-Host "  Staging template: $template"
         xcopy /S/Y/Q "$T\Staging\*" "$($vm.Drive):\"
       }
-      foreach ($task in $templateData.template.tasks.task) {
-        $tid = $task.id;
-        Write-Host "  Staging task: $tid"
-        xcopy /S/Y/Q "$($config.teamdir)\TaskLibrary\$tid\*" "$($vm.Drive):\deploy.temp\$tid\"
-        $client_tasks.SelectSingleNode("tasks").InnerXml += "<task id='$tid'/>";
-      }
-      foreach ($task in $AddTask) {
-        if (Test-Path ($task)) {
-          $tid = (gi $task).Name;
-          Write-Host "  Staging task: $tid"
-          xcopy /S/Y/Q "$task\*" "$($vm.Drive):\deploy.temp\$tid\"
-        } elseif (Test-Path "$($config.teamdir)\TaskLibrary\$task") {
-          $tid = $task;
+      if ($templateData.template.image.prep -ne "unattendOnly")
+      {
+        foreach ($task in $templateData.template.tasks.task) {
+          $tid = $task.id;
           Write-Host "  Staging task: $tid"
           xcopy /S/Y/Q "$($config.teamdir)\TaskLibrary\$tid\*" "$($vm.Drive):\deploy.temp\$tid\"
-        } else {
-          throw "Task not found: $task";
+          $client_tasks.SelectSingleNode("tasks").InnerXml += "<task id='$tid'/>";
         }
-        $client_tasks.SelectSingleNode("tasks").InnerXml += "<task id='$tid'/>";
+        foreach ($task in $AddTask) {
+          if (Test-Path ($task)) {
+            $tid = (gi $task).Name;
+            Write-Host "  Staging task: $tid"
+            xcopy /S/Y/Q "$task\*" "$($vm.Drive):\deploy.temp\$tid\"
+          } elseif (Test-Path "$($config.teamdir)\TaskLibrary\$task") {
+            $tid = $task;
+            Write-Host "  Staging task: $tid"
+            xcopy /S/Y/Q "$($config.teamdir)\TaskLibrary\$tid\*" "$($vm.Drive):\deploy.temp\$tid\"
+          } else {
+            throw "Task not found: $task";
+          }
+          $client_tasks.SelectSingleNode("tasks").InnerXml += "<task id='$tid'/>";
+        }
+        $client_tasks.Save("$($vm.Drive):\deploy.temp\tasks.xml");
       }
-      $client_tasks.Save("$($vm.Drive):\deploy.temp\tasks.xml");
       [void](Dismount-VHD $vm.Vhd);
       $vm.Drive = $null;
     
@@ -263,12 +283,13 @@ Function Deploy-EasyVM {
   }
 
   Write-Host "VM created!"
-  vmconnect localhost $name
   if (!$NoBoot) {
     Write-Host "The VM will now start to prepare itself."
     Write-Host "It will be ready when it shows the lock screen."
     Start-VM $vm.id
   }
+  if ($passwordWarning) { Write-Warning "Password security: Your password(s) have been saved on the VM. Be sure to delete C:\unattend.xml!" }
+  vmconnect localhost $name
   $ErrorActionPreference = $myeap;
 }
 
