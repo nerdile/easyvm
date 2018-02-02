@@ -376,7 +376,8 @@ Function _New-BaseVM($id, $vswitch, $osvhd, $vlan) {
     [void](New-VM $id -MemoryStartupBytes 1GB -VHDPath $osvhd -SwitchName $vswitch);
     [void](Set-VMBios $id -EnableNumLock);
   }
-  if ((gcm Set-VM).parameters.keys -contains "CheckpointType") { Set-VM $id -CheckpointType Standard }
+  if ((gcm Set-VM).parameters.ContainsKey("CheckpointType")) { Set-VM $id -CheckpointType Standard }
+  if ((gcm Set-VM).Parameters.ContainsKey("AutomaticCheckpointsEnabled")) { Set-VM $id -AutomaticCheckpointsEnabled $false }
   [void](Set-VMMemory $id -DynamicMemoryEnabled $true -MaximumBytes 2GB -MinimumBytes 256MB -StartupBytes 1GB);
   [void](Set-VMProcessor $id -Count 4);
   [void](Set-VMComPort $id -number 1 -path "\\.\pipe\vm$($id)");
