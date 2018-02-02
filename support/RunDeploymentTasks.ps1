@@ -20,14 +20,7 @@ function log ($msg) {
 $done = $false;
 
 $tasks = $taskxml.SelectNodes("/tasks/task");
-if ($tasks -eq $null -or $tasks.Count -eq 0) {
-  log " -> No more tasks"
-  $done = $true;
-  Remove-ItemProperty $runKey $runValue;
-  del $deploy -Recurse -Force
-  # Remove admin auto-logon
-  Remove-ItemProperty $logonKey $logonValue;
-} else {
+if ($tasks -ne $null -and $tasks.Count -gt 0) {
   while (!$done) {
     log "Checking for deployment tasks"
     $tasks = $taskxml.SelectNodes("/tasks/task");
@@ -86,6 +79,15 @@ if ($tasks -eq $null -or $tasks.Count -eq 0) {
       }
     }
   }
+}
+
+$tasks = $taskxml.SelectNodes("/tasks/task");
+if ($tasks -eq $null -or $tasks.Count -eq 0) {
+  log " -> No more tasks"
+  Remove-ItemProperty $runKey $runValue;
+  del $deploy -Recurse -Force
+  # Remove admin auto-logon
+  Remove-ItemProperty $logonKey $logonValue;
 }
 
 log " -> Rebooting"
