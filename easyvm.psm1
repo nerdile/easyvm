@@ -140,8 +140,11 @@ Function Deploy-EasyVM {
   # Get the interactive prompts out of the way before we start copying vhd's around
   if ($templateData.template.image.prep -ne "none")
   {
-    $xml = gi "$T\unattend.$Arch.xml" -ea 0
-    if (!$xml) { $xml = gi "$T\..\unattend.$Arch.xml" }
+    $xml = gi "$T\unattend.xml" -ea 0
+    if (!$xml) { $xml = gi "$T\unattend.$arch.xml" -ea 0}
+    if (!$xml) { $xml = gi "$T\..\unattend.xml"  -ea 0}
+    if (!$xml) { $xml = gi "$T\..\unattend.$arch.xml" -ea 0}
+    if (!$xml) { throw "Unattend file not found";}
 
     $uxml = [xml](gc $xml);
     $AdminCreds = _Get-AdminCreds $AdminCreds;
@@ -176,7 +179,6 @@ Function Deploy-EasyVM {
   $vm = _New-AutoVMState $Name $Hostname $vhd $uxml
 
   # Prepare the VHD if necessary
-  $passwordWarning = $true;
   if ($templateData.template.image.prep -ne "none")
   {
     _Set-UnattendHostname $vm.uxml $hostname;
@@ -197,7 +199,6 @@ Function Deploy-EasyVM {
 
     try {
       echo "$((date).ToString()): Staged from $T" > "$($vm.Staging)\DeploymentLog.txt"
-      [void]($vm.Uxml.Save("$($vm.Staging)\unattend.xml"));
 
       if ($templateData.template.image.prep -ne "unattendOnly")
       {
@@ -207,7 +208,6 @@ Function Deploy-EasyVM {
         copy "$($config.teamdir)\Support\SetupComplete.cmd" "$($vm.Staging)\Windows\Setup\Scripts\."
         copy "$($config.teamdir)\Support\RunDeploymentTasks.ps1" "$($vm.Staging)\Windows\Setup\Scripts\."
         xcopy /S/Y/Q "$($config.teamdir)\Support\Tools\*" "$($vm.Staging)\deploy.temp\_easyvm_\"
-        $passwordWarning = $false;
         # SetupComplete deletes the unattend file
       }
 
@@ -217,6 +217,10 @@ Function Deploy-EasyVM {
         $dism_command = "dism.exe /Image:$($vm.Drive):\ /Apply-Unattend:$($vm.Staging)\unattend.offline.xml";
         Write-Verbose $dism_command;
         iex $dism_command;
+      }
+      if (Test-Path "$T\unattend.transform.xml") {
+        $transform = new-object Microsoft.Web.XmlTransform.XmlTransformation -ArgumentList @("$T\unattend.transform.xml");
+        if (!$transform.Apply($vm.Uxml)) { throw "Transformation failed in for template";}
       }
 
       if ($templateData.template.image.prep -ne "unattendOnly")
@@ -240,8 +244,13 @@ Function Deploy-EasyVM {
         foreach ($task in $templateData.template.tasks.task) {
           $tid = $task.id;
           Write-Host "  Staging task: $tid"
-          xcopy /S/Y/Q "$($config.teamdir)\TaskLibrary\$tid\*" "$($vm.Drive):\deploy.temp\$tid\"
+          $taskPath = "$($config.teamdir)\TaskLibrary\$tid";
+          xcopy /S/Y/Q "$taskPath\*" "$($vm.Drive):\deploy.temp\$tid\"
           $client_tasks.SelectSingleNode("tasks").InnerXml += "<task id='$tid'/>";
+          if (Test-Path "$taskPath\unattend.transform.xml") {
+            $transform = new-object Microsoft.Web.XmlTransform.XmlTransformation -ArgumentList @("$taskPath\unattend.transform.xml");
+            if (!$transform.Apply($vm.Uxml)) { throw "Transformation failed in task $tid";}
+          }
         }
         foreach ($task in $AddTask) {
           if (Test-Path ($task)) {
@@ -259,6 +268,12 @@ Function Deploy-EasyVM {
         }
         $client_tasks.Save("$($vm.Drive):\deploy.temp\tasks.xml");
       }
+
+      $panther = "$($vm.Drive):\Windows\Panther";
+      [void](mkdir $panther);
+      [void]($vm.Uxml.Save("$panther\unattend.xml"));
+      (gc "$panther\unattend.xml").Replace("`$arch",$arch) | set-content "$panther\unattend.xml" -Encoding UTF8;
+
       [void](Dismount-VHD $vm.Vhd);
       $vm.Drive = $null;
     
@@ -288,7 +303,6 @@ Function Deploy-EasyVM {
     Write-Host "It will be ready when it shows the lock screen."
     Start-VM $vm.id
   }
-  if ($passwordWarning) { Write-Warning "Password security: Your password(s) have been saved on the VM. Be sure to delete C:\unattend.xml!" }
   vmconnect localhost $name
   $ErrorActionPreference = $myeap;
 }
@@ -376,7 +390,8 @@ Function _New-BaseVM($id, $vswitch, $osvhd, $vlan) {
     [void](New-VM $id -MemoryStartupBytes 1GB -VHDPath $osvhd -SwitchName $vswitch);
     [void](Set-VMBios $id -EnableNumLock);
   }
-  if ((gcm Set-VM).parameters.keys -contains "CheckpointType") { Set-VM $id -CheckpointType Standard }
+  if ((gcm Set-VM).parameters.ContainsKey("CheckpointType")) { Set-VM $id -CheckpointType Standard }
+  if ((gcm Set-VM).Parameters.ContainsKey("AutomaticCheckpointsEnabled")) { Set-VM $id -AutomaticCheckpointsEnabled $false }
   [void](Set-VMMemory $id -DynamicMemoryEnabled $true -MaximumBytes 2GB -MinimumBytes 256MB -StartupBytes 1GB);
   [void](Set-VMProcessor $id -Count 4);
   [void](Set-VMComPort $id -number 1 -path "\\.\pipe\vm$($id)");
