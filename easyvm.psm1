@@ -597,7 +597,10 @@ Function _Get-ConfigOrPrompt ($key, $default, $prompt) {
     $done = $false;
     [void](Dismount-VHD $vm.vhd -ea 0);
     $vm.Drive = (Mount-VHD -Path $vm.vhd -PassThru | Get-Disk | Get-Partition | Get-Volume | ?{ $_.DriveLetter })[0].DriveLetter;
-    Sleep 1
+    while (!(get-psdrive $vm.Drive -ea 0)) {
+      Write-Verbose "Waiting for drive to exist";
+      Sleep 1;
+    }
   }
   
 
