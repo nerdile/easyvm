@@ -270,7 +270,7 @@ Function Deploy-EasyVM {
       }
 
       $panther = "$($vm.Drive):\Windows\Panther";
-      [void](mkdir $panther);
+      if (!(Test-Path $panther)) { [void](mkdir $panther); }
       [void]($vm.Uxml.Save("$panther\unattend.xml"));
       (gc "$panther\unattend.xml").Replace("`$arch",$arch) | set-content "$panther\unattend.xml" -Encoding UTF8;
 
@@ -597,9 +597,11 @@ Function _Get-ConfigOrPrompt ($key, $default, $prompt) {
     $done = $false;
     [void](Dismount-VHD $vm.vhd -ea 0);
     $vm.Drive = (Mount-VHD -Path $vm.vhd -PassThru | Get-Disk | Get-Partition | Get-Volume | ?{ $_.DriveLetter })[0].DriveLetter;
+    get-psdrive | out-null;
     while (!(get-psdrive $vm.Drive -ea 0)) {
-      Write-Verbose "Waiting for drive to exist";
+      Write-Verbose "Waiting for drive $($vm.Drive) to exist";
       Sleep 1;
+      get-psdrive | out-null;
     }
   }
   
