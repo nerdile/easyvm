@@ -106,10 +106,11 @@ Function Deploy-EasyVM {
     [switch] $NoCache,
     [string[]] $AddTask
   )
- 
+  $startPromptTime = [DateTime]::Now;
+
   $myeap = $ErrorActionPreference;
   $ErrorActionPreference = "Stop";
-  
+
   if (!$Hostname) {
     if (!$Name.Contains("-") -and $Name.Length -lt 6) {
       $Hostname = ("$($Env:Username)-$Name");
@@ -137,6 +138,9 @@ Function Deploy-EasyVM {
   $templateData = [xml](gc "$T\template.xml");
   $uxml = $null;
 
+  $tver = 1;
+  if ($templateData.template.version) { $tver = [int]($templateData.template.version) }
+
   # Get the interactive prompts out of the way before we start copying vhd's around
   if ($templateData.template.image.prep -ne "none")
   {
@@ -151,7 +155,7 @@ Function Deploy-EasyVM {
     if ($templateData.template.requiresDomainJoin -and $NoDomainJoin) {
       throw "This template cannot be used with -NoDomainJoin.";
     }
-    
+
     # Get User Credentials
     if (!($NoDomainJoin)) {
       $DomainCreds = _Get-DomainCreds $DomainCreds;
@@ -159,6 +163,7 @@ Function Deploy-EasyVM {
     }
   }
 
+  $startTime = [DateTime]::Now;
   Write-Host "Creating system volume..."
 
   if ($OverrideVHD) {
@@ -198,17 +203,23 @@ Function Deploy-EasyVM {
     _Stage-AutoVM $vm;
 
     try {
-      echo "$((date).ToString()): Staged from $T" > "$($vm.Staging)\DeploymentLog.txt"
+      echo "$startPromptTime : Began prompting for information" > "$($vm.Staging)\DeploymentLog.txt"
+      echo "$startTime : Began processing" >> "$($vm.Staging)\DeploymentLog.txt"
+      echo "$((date).ToString()) : Began staging from $T" >> "$($vm.Staging)\DeploymentLog.txt"
 
       if ($templateData.template.image.prep -ne "unattendOnly")
       {
         [void](mkdir "$($vm.Staging)\Windows\Setup\Scripts" -Force -ea 0);
         [void](mkdir "$($vm.Staging)\deploy.temp" -Force -ea 0);
         [void](mkdir "$($vm.Staging)\deploy.temp\_easyvm_" -Force -ea 0);
+
         copy "$($config.teamdir)\Support\SetupComplete.cmd" "$($vm.Staging)\Windows\Setup\Scripts\."
-        copy "$($config.teamdir)\Support\RunDeploymentTasks.ps1" "$($vm.Staging)\Windows\Setup\Scripts\."
+        if ($tver -ge 2) {
+            copy "$($config.teamdir)\Support\RunDeploymentTasksV2.ps1" "$($vm.Staging)\Windows\Setup\Scripts\RunDeploymentTasks.ps1"
+        } else {
+            copy "$($config.teamdir)\Support\RunDeploymentTasks.ps1" "$($vm.Staging)\Windows\Setup\Scripts\."
+        }
         xcopy /S/Y/Q "$($config.teamdir)\Support\Tools\*" "$($vm.Staging)\deploy.temp\_easyvm_\"
-        # SetupComplete deletes the unattend file
       }
 
       _Mount-AutoVM $vm;
@@ -300,7 +311,11 @@ Function Deploy-EasyVM {
   Write-Host "VM created!"
   if (!$NoBoot) {
     Write-Host "The VM will now start to prepare itself."
-    Write-Host "It will be ready when it shows the lock screen."
+    if ($tver -ge 2) {
+      Write-Host "It will be ready when it reboots to an empty desktop."
+    } else {
+      Write-Host "It will be ready when it shows the lock screen."
+    }
     Start-VM $vm.id
   }
   vmconnect localhost $name
@@ -383,16 +398,16 @@ Function Revive-EasyVM {
 Function _New-BaseVM($id, $vswitch, $osvhd, $vlan) {
   if ((gi $osvhd).Extension.ToLower() -eq ".vhdx") {
     #Gen2
-    [void](New-VM $id -Generation 2 -MemoryStartupBytes 1GB -VHDPath $osvhd -SwitchName $vswitch);
+    [void](New-VM $id -Generation 2 -MemoryStartupBytes 2GB -VHDPath $osvhd -SwitchName $vswitch);
     [void](Set-VMFirmware $id -EnableSecureBoot Off)
   } else {
     #Gen1
-    [void](New-VM $id -MemoryStartupBytes 1GB -VHDPath $osvhd -SwitchName $vswitch);
+    [void](New-VM $id -MemoryStartupBytes 2GB -VHDPath $osvhd -SwitchName $vswitch);
     [void](Set-VMBios $id -EnableNumLock);
   }
   if ((gcm Set-VM).parameters.ContainsKey("CheckpointType")) { Set-VM $id -CheckpointType Standard }
   if ((gcm Set-VM).Parameters.ContainsKey("AutomaticCheckpointsEnabled")) { Set-VM $id -AutomaticCheckpointsEnabled $false }
-  [void](Set-VMMemory $id -DynamicMemoryEnabled $true -MaximumBytes 2GB -MinimumBytes 256MB -StartupBytes 1GB);
+  [void](Set-VMMemory $id -DynamicMemoryEnabled $true -MaximumBytes 2GB -MinimumBytes 256MB -StartupBytes 2GB);
   [void](Set-VMProcessor $id -Count 4);
   [void](Set-VMComPort $id -number 1 -path "\\.\pipe\vm$($id)");
   if ($vlan -ne 0) {
@@ -483,11 +498,14 @@ function _New-EasyVMSystemVolume ($config, $basevhd, $arch, $ext, $vhd, $ovhd, $
       [void](Resize-VHD $vhd 200GB);
     }
   } else {
-    $cachedName = (gi $templatevhd).Name;
+    $tvhd = (gi $templatevhd);
+    $cachedName = "{0}.{1}.{2}" -f $tvhd.BaseName, $tvhd.LastWriteTime.ToString("yyyyMMdd"), $ext;
     Write-Verbose "Cached as: $($config.VhdCache)\$cachedName";
 
-    if ($templatevhd -ne "$($config.VhdCache)\$cachedName") {
-      [void](xcopy /Y/D "$templatevhd" "$($config.VhdCache)\")
+    if ($tvhd.Directory.FullName.ToLower() -ne $config.VhdCache.ToLower()) {
+      if (!(Test-Path "$($config.VhdCache)\$cachedName")) {
+        [void](copy "$templatevhd" "$($config.VhdCache)\$cachedName");
+      }
     }
     if ((gi $templatevhd).Extension.ToLower() -eq ".vhdx") {
       Write-Verbose "System Volume: Creating a differencing disk..."
