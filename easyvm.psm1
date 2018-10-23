@@ -449,8 +449,9 @@ Function _Check-EasyVMPrereqs {
 Function Get-EasyVMConfig {
   $vmlan = _Get-Config "vmlan";
   if (!($vmlan)) {
-    $switches = (Get-VMSwitch);
-    if ($switches -eq $null -or $switches.length -eq 0) { throw "You need at least one vswitch."; }
+    # Do not include Default Switch (this is how to detect it across all languages)
+    $switches = (Get-VMSwitch) | ?{ $_.id -ne "c08cb7b8-9b3c-408e-8e30-5e16a3aeb444" };
+    if ($switches -eq $null -or $switches.length -eq 0) { throw "You need at least one vswitch (Default Switch is not supported)."; }
     Write-Host "Which vswitch do you want to use?"
     $switches | ft Name | Out-Host;
     $vmlan = (_Get-ConfigOrPrompt "vmlan" $switches[0].Name "If none of the above, hit Ctrl-C and go create a corpnet vswitch.");
