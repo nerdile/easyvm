@@ -104,6 +104,8 @@ Function Deploy-EasyVM {
     [string] $Gen="default",
     [string] $OverrideVHD,
     [switch] $NoCache,
+    [uint64] $vram=2GB,
+    [uint64] $vcpus=4,
     [string[]] $AddTask
   )
   $startPromptTime = [DateTime]::Now;
@@ -299,7 +301,7 @@ Function Deploy-EasyVM {
 
   # Deploy VM
   Write-Host "Creating VM in Hyper-V..."
-  _New-BaseVM $vm.id $config.vswitch $vm.vhd $config.VSwitchVLAN;
+  _New-BaseVM $vm.id $config.vswitch $vm.vhd $config.VSwitchVLAN $vram $vcpus;
   
   if ($templateData.template.datavol.type -ne "none")
   {
@@ -355,6 +357,8 @@ Function Revive-EasyVM {
   Param(
     [Parameter(Mandatory=$True,Position=0)]
     [string] $Name,
+    [uint64] $vram=2GB,
+    [uint64] $vcpus=4,
     [switch] $NoBoot
   )
   
@@ -379,7 +383,7 @@ Function Revive-EasyVM {
 
   # Deploy VM
   Write-Host "Creating VM in Hyper-V..."
-  _New-BaseVM $Name $config.vswitch $osvhd.FullName $config.VSwitchVLAN;
+  _New-BaseVM $Name $config.vswitch $osvhd.FullName $config.VSwitchVLAN $vram $vcpus;
   if ((gi $datavhd -ea 0) -ne $null) {
     [void](Add-VMHardDiskDrive $Name -Path $datavhd);
   }
@@ -395,20 +399,23 @@ Function Revive-EasyVM {
 # ----------------------------------------------------------------------------
 #  EasyVM helpers
 # ----------------------------------------------------------------------------
-Function _New-BaseVM($id, $vswitch, $osvhd, $vlan) {
+Function _New-BaseVM($id, $vswitch, $osvhd, $vlan, $vram, $vcpus) {
+  $minram = 2GB;
+  if ($minram -gt $vram) { $minram = $vram; }
+
   if ((gi $osvhd).Extension.ToLower() -eq ".vhdx") {
     #Gen2
-    [void](New-VM $id -Generation 2 -MemoryStartupBytes 2GB -VHDPath $osvhd -SwitchName $vswitch);
+    [void](New-VM $id -Generation 2 -MemoryStartupBytes $vram -VHDPath $osvhd -SwitchName $vswitch);
     [void](Set-VMFirmware $id -EnableSecureBoot Off)
   } else {
     #Gen1
-    [void](New-VM $id -MemoryStartupBytes 2GB -VHDPath $osvhd -SwitchName $vswitch);
+    [void](New-VM $id -MemoryStartupBytes $vram -VHDPath $osvhd -SwitchName $vswitch);
     [void](Set-VMBios $id -EnableNumLock);
   }
   if ((gcm Set-VM).parameters.ContainsKey("CheckpointType")) { Set-VM $id -CheckpointType Standard }
   if ((gcm Set-VM).Parameters.ContainsKey("AutomaticCheckpointsEnabled")) { Set-VM $id -AutomaticCheckpointsEnabled $false }
-  [void](Set-VMMemory $id -DynamicMemoryEnabled $true -MaximumBytes 2GB -MinimumBytes 256MB -StartupBytes 2GB);
-  [void](Set-VMProcessor $id -Count 4);
+  [void](Set-VMMemory $id -DynamicMemoryEnabled $true -MaximumBytes $vram -MinimumBytes 256MB -StartupBytes $minram);
+  [void](Set-VMProcessor $id -Count $vcpus);
   [void](Set-VMComPort $id -number 1 -path "\\.\pipe\vm$($id)");
   if ($vlan -ne 0) {
     [void](Set-VMNetworkAdapterVlan -VMName $id -Access -VlanId $vlan);
