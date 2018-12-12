@@ -121,6 +121,7 @@ Function Deploy-EasyVM {
     }
   }
   if ($Hostname.Length -gt 15) { throw "Hostname too long: $Hostname"; }
+  if (!($Hostname -match "^[a-zA-Z_\-0-9]{1,15}$")) { throw "$Hostname contains invalid chars"; }
 
   # Check global setup
   if (!(_Check-EasyVMPrereqs)) { throw "Prerequisites not met."; };
