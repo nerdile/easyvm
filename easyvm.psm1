@@ -466,10 +466,10 @@ Function Get-EasyVMConfig {
   }
   
   $homedir = (_Get-ConfigOrPrompt "HomeDir" "\\daniel.ntdev.corp.microsoft.com\shared\easyvm" "Please enter the path where the EasyVM templates are stored.");
-  $basedir = (_Get-ConfigOrPrompt "vmdir" "G:\vm" "Where should we store the VM's you create?");
+  $basedir = (_Get-ConfigPathOrPrompt "vmdir" "D:\vm" "Where should we store the VM's you create?");
   if (!(Test-Path $Basedir)) { [void](mkdir $Basedir -ea 0); };
   if (!(Test-Path $Basedir)) { throw "Not found: $Basedir"; };
-  $cachedir = _Get-ConfigOrPrompt "pristine" "$Basedir\pristine" "Where should we store the base VHD images?";
+  $cachedir = _Get-ConfigPathOrPrompt "pristine" "$Basedir\pristine" "Where should we store the base VHD images?";
   if (!(Test-Path $Cachedir)) { [void](mkdir $Cachedir -ea 0); };
   if (!(Test-Path $Cachedir)) { throw "Not found: $Cachedir"; };
   echo "EasyVM will cache standard OS images in this folder. You can delete them to reclaim space.  EasyVM will automatically download them if they are needed in the future." > "$cachedir\README.txt";
@@ -579,6 +579,20 @@ Function _Get-ConfigOrPrompt ($key, $default, $prompt) {
     [void](Write-Host "Default: $default");
     $value = Read-Host "Value: ";
     if (!$value) { $value = $default; }
+    _Set-Config $key $value;
+  }
+  $value;
+}
+
+Function _Get-ConfigPathOrPrompt ($key, $default, $prompt) {
+  $value = _Get-Config $key;
+  if (!$value) {
+    [void](Write-Host $prompt);
+    [void](Write-Host "Default: $default");
+    $value = Read-Host "Value: ";
+    if (!$value) { $value = $default; }
+    if (!(Test-Path $value)) { [void](mkdir $value -ea 0); }
+    if (!(Test-Path $value)) { throw "Path does not exist: $value"; }
     _Set-Config $key $value;
   }
   $value;
