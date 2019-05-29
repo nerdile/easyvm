@@ -153,8 +153,8 @@ Function Deploy-EasyVM {
     if (!$xml) { $xml = gi "$T\..\unattend.$arch.xml" -ea 0}
     if (!$xml) { throw "Unattend file not found";}
 
-    $uxml = [xml](gc $xml);
     $AdminCreds = _Get-AdminCreds $AdminCreds;
+    $uxml = [xml]((gc $xml).Replace("`$`$AdminPassword`$`$", $admincreds.GetNetworkCredential().password));
     if ($templateData.template.requiresDomainJoin -and $NoDomainJoin) {
       throw "This template cannot be used with -NoDomainJoin.";
     }
