@@ -89,31 +89,37 @@ Function Deploy-EasyVM {
   Param(
     [Parameter(Mandatory=$True,Position=0)]
     [string] $Name,
-    [Parameter(Mandatory=$True,Position=1)]
+    [Parameter(Mandatory=$True,Position=1,ParameterSetName="FromTemplate")]
     [string] $Template,
-    [Parameter(Mandatory=$False,Position=2)]
+    [Parameter(Mandatory=$False,Position=2,ParameterSetName="FromTemplate")]
     [string] $Hostname,
     [switch] $NoBoot,
+    [Parameter(ParameterSetName="FromTemplate")]
     [switch] $NoDomainJoin,
     [switch] $Resume,
-    [Parameter()]
+    [Parameter(ParameterSetName="FromTemplate")]
     [PSCredential] $AdminCreds,
-    [Parameter()]
+    [Parameter(ParameterSetName="FromTemplate")]
     [PSCredential] $DomainCreds,
-    [Parameter()]
+    [Parameter(ParameterSetName="FromTemplate")]
     [string] $DomainToJoin,
-    [Parameter()]
+    [Parameter(ParameterSetName="FromTemplate")]
     [ValidateLength(29,29)]
     [string] $ProductKey,
     [ValidateSet("amd64","x86")]
     [string] $Arch="amd64",
     [ValidateSet("1","2","default")]
     [string] $Gen="default",
+    [Parameter(ParameterSetName="FromTemplate")]
     [string] $OverrideVHD,
+    [Parameter(ParameterSetName="FromTemplate")]
     [switch] $NoCache,
     [uint64] $vram=2GB,
     [uint64] $vcpus=4,
-    [string[]] $AddTask
+    [Parameter(ParameterSetName="FromTemplate")]
+    [string[]] $AddTask,
+    [Parameter(ParameterSetName="FromRawVhd")]
+    [string] $FromRawVhd
   )
   $startPromptTime = [DateTime]::Now;
 
@@ -144,58 +150,69 @@ Function Deploy-EasyVM {
   }
   [void](mkdir "$vmdir" -ea 0);
 
-  $TeamDir = $config.teamdir;
-  $T = "$TeamDir\Template\$Template";
-  $templateData = [xml](gc "$T\template.xml");
-  $uxml = $null;
+  if (!$FromRawVhd) {
+    $TeamDir = $config.teamdir;
+    $T = "$TeamDir\Template\$Template";
+    $templateData = [xml](gc "$T\template.xml");
+    $uxml = $null;
 
-  $tver = 1;
-  if ($templateData.template.version) { $tver = [int]($templateData.template.version) }
+    $tver = 1;
+    if ($templateData.template.version) { $tver = [int]($templateData.template.version) }
 
-  # Get the interactive prompts out of the way before we start copying vhd's around
-  if ($templateData.template.image.prep -ne "none")
-  {
-    $xml = gi "$T\unattend.xml" -ea 0
-    if (!$xml) { $xml = gi "$T\unattend.$arch.xml" -ea 0}
-    if (!$xml) { $xml = gi "$T\..\unattend.xml"  -ea 0}
-    if (!$xml) { $xml = gi "$T\..\unattend.$arch.xml" -ea 0}
-    if (!$xml) { throw "Unattend file not found";}
+    # Get the interactive prompts out of the way before we start copying vhd's around
+    if ($templateData.template.image.prep -ne "none")
+    {
+      $xml = gi "$T\unattend.xml" -ea 0
+      if (!$xml) { $xml = gi "$T\unattend.$arch.xml" -ea 0}
+      if (!$xml) { $xml = gi "$T\..\unattend.xml"  -ea 0}
+      if (!$xml) { $xml = gi "$T\..\unattend.$arch.xml" -ea 0}
+      if (!$xml) { throw "Unattend file not found";}
 
-    $AdminCreds = _Get-AdminCreds $AdminCreds;
-    $uxml = [xml]((gc $xml).Replace("`$`$AdminPassword`$`$", $admincreds.GetNetworkCredential().password));
-    if ($templateData.template.requiresDomainJoin -and $NoDomainJoin) {
-      throw "This template cannot be used with -NoDomainJoin.";
-    }
+      $AdminCreds = _Get-AdminCreds $AdminCreds;
+      $uxml = [xml]((gc $xml).Replace("`$`$AdminPassword`$`$", $admincreds.GetNetworkCredential().password));
+      if ($templateData.template.requiresDomainJoin -and $NoDomainJoin) {
+        throw "This template cannot be used with -NoDomainJoin.";
+      }
 
-    # Get User Credentials
-    if (!($NoDomainJoin)) {
-      $DomainCreds = _Get-DomainCreds $DomainCreds;
-      if (!$domaincreds) { throw "To skip domain join, use -NoDomainJoin." };
+      # Get User Credentials
+      if (!($NoDomainJoin)) {
+        $DomainCreds = _Get-DomainCreds $DomainCreds;
+        if (!$domaincreds) { throw "To skip domain join, use -NoDomainJoin." };
+      }
     }
   }
 
   $startTime = [DateTime]::Now;
   Write-Host "Creating system volume..."
-
-  if ($OverrideVHD) {
+  if ($FromRawVhd) {
+    $srcvhd = _Get-MaybeVhdx $FromRawVHD $Arch $Gen
+    if (!$srcvhd) { throw "VHD/VHDX not found: $FromRawVHD"; }
+    $srctemplate = $null;
+    $OverrideVHD = $FromRawVhd;
+    # Caching is based on the BaseName and there are too many files named Flash.vhd out there
+    # We'll need to allow the caller to specify the name to use in caching
+    $NoCache = $True;
+  } elseif ($OverrideVHD) {
     $srcvhd = _Get-MaybeVhdx $OverrideVHD $Arch $Gen
+    $srctemplate = $null;
     if (!$srcvhd) { throw "VHD/VHDX not found: $OverrideVHD"; }
   } else {
-    $srcvhd = _Get-MaybeVhdx "$($config.TeamDir)\vhd\$($templateData.template.image.file)" $Arch $Gen
-    if (!$srcvhd) { throw "VHD/VHDX not found: $($templateData.template.image.file)"; }
+    $srctemplate = $templateData.template.image.file;
+    $srcvhd = _Get-MaybeVhdx "$($config.TeamDir)\vhd\$srctemplate" $Arch $Gen
+    if (!$srcvhd) { throw "VHD/VHDX not found: $srctemplate"; }
   }
   $ext = $srcvhd.Extension.Substring(1);
 
   $vhd = "$vmdir\$Name-system.$ext";
   if (!($Resume -and (Test-Path $vhd))) {
-    [void](_New-EasyVMSystemVolume $config $templateData.template.image.file $Arch $ext $vhd $OverrideVHD $NoCache);
+    [void](_New-EasyVMSystemVolume $config $srctemplate $Arch $ext $vhd $OverrideVHD $NoCache);
   }
 
   Write-Host "Staging deployment files..."
   $vm = _New-AutoVMState $Name $Hostname $vhd $uxml
 
   # Prepare the VHD if necessary
-  if ($templateData.template.image.prep -ne "none")
+  if (!$FromRawVhd -and $templateData.template.image.prep -ne "none")
   {
     _Set-UnattendHostname $vm.uxml $hostname;
     _Set-UnattendAdminPass $vm.uxml $admincreds;
@@ -312,7 +329,7 @@ Function Deploy-EasyVM {
   Write-Host "Creating VM in Hyper-V..."
   _New-BaseVM $vm.id $config.vswitch $vm.vhd $config.VSwitchVLAN $vram $vcpus;
   
-  if ($templateData.template.datavol.type -ne "none")
+  if (!$FromRawVhd -and $templateData.template.datavol.type -ne "none")
   {
     $datavhd = "$vmdir\$Name-data.vhdx";
     [void](New-Vhd $datavhd -SizeBytes 250GB -Dynamic);
