@@ -45,6 +45,11 @@
   PSCredential object (See Get-Credential) with the domain, user, and password
   to use for domain joining the VM.
 
+.PARAMETER DomainToJoin
+  Domain to join, assuming -NoDomainJoin is not passed.
+  If not specified, EasyVM checks the registry for a value to use.
+  If not present in the registry, uses the host's domain.
+
 .PARAMETER ProductKey
   Product key for the the image.
 
@@ -96,6 +101,8 @@ Function Deploy-EasyVM {
     [Parameter()]
     [PSCredential] $DomainCreds,
     [Parameter()]
+    [string] $DomainToJoin,
+    [Parameter()]
     [ValidateLength(29,29)]
     [string] $ProductKey,
     [ValidateSet("amd64","x86")]
@@ -126,6 +133,7 @@ Function Deploy-EasyVM {
   # Check global setup
   if (!(_Check-EasyVMPrereqs)) { throw "Prerequisites not met."; };
   $config = Get-EasyVMConfig;
+  if (!$DomainToJoin) { $DomainToJoin = $config.CorpDomain; }
 
   # Validate parameters
   if (Get-VM $Name -ea 0) { throw "VM already exists: $Name"; }
@@ -193,7 +201,7 @@ Function Deploy-EasyVM {
     _Set-UnattendAdminPass $vm.uxml $admincreds;
     _Set-UnattendRegistration $vm.uxml $config.Owner $config.Org;
     if (!$NoDomainJoin) {
-      _Set-UnattendDomainJoin $vm.uxml $config.CorpDomain $domaincreds;
+      _Set-UnattendDomainJoin $vm.uxml $DomainToJoin $domaincreds;
       _Add-UnattendDomainAccount $vm.uxml $domaincreds.userinfo.domain $domaincreds.userinfo.name "Administrators"
     }
     if (![String]::IsNullOrEmpty($ProductKey)) {
